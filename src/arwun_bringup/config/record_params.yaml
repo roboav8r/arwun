@@ -1,0 +1,89 @@
+# Arwun field data-collection parameters.
+#
+# NOTE ON TOPIC NAMES: realsense2_camera has changed its topic namespacing and
+# its profile parameter names across releases. The names below target the
+# 4.5x series launched with camera_name:=camera and an empty namespace. Before
+# your first real collection, plug the D435i in, run the launch, and check:
+#
+#     ros2 topic list | grep camera
+#
+# then reconcile `record_controller.topics` below with what actually appears.
+# `ros2 bag record` does NOT error on a topic name that never publishes -- it
+# records the ones it finds and silently omits the rest, so a typo here shows
+# up only as a missing topic in `ros2 bag info` after the fact. Check the
+# first bag of any session before trusting the rest.
+
+camera:
+  ros__parameters:
+    # --- streams ---
+    enable_color: true
+    enable_depth: true
+    enable_infra1: false
+    enable_infra2: false
+
+    # Resolution / fps. "width,height,fps".
+    # 640x480x30 is the sweet spot for the Orin Nano over USB3: 848x480x30
+    # also works, 1280x720x30 on both color and depth will saturate the bus
+    # and start dropping frames.
+    rgb_camera.color_profile: "640,480,30"
+    depth_module.depth_profile: "640,480,30"
+
+    # --- IMU (D435i) ---
+    enable_gyro: true
+    enable_accel: true
+    # 2 = linear_interpolation, which merges gyro+accel into a single
+    # /camera/imu topic. With unite_imu_method:=0 you get separate
+    # /camera/gyro/sample and /camera/accel/sample instead, and the topic
+    # list below must change to match.
+    unite_imu_method: 2
+
+    # --- derived ---
+    align_depth.enable: true
+    enable_sync: true
+
+    # --- frames ---
+    publish_tf: true
+    tf_publish_rate: 0.0   # 0.0 = static transforms only, published once
+
+    # Power-cycles the sensor on start. Costs ~2s of startup but avoids the
+    # "frames didn't arrive" failure after an unclean shutdown, which is the
+    # common failure mode when you kill a launch in the field.
+    initial_reset: true
+
+joy_linux:
+  ros__parameters:
+    dev: "/dev/input/js0"
+    deadzone: 0.05
+    # Republish the last state at this rate even when nothing changes, so the
+    # recorder still sees button state if a BT packet is dropped.
+    autorepeat_rate: 20.0
+    coalesce_interval: 0.01
+
+record_controller:
+  ros__parameters:
+    output_dir: "~/arwun_bags"
+    bag_prefix: "arwun"
+    storage_id: "sqlite3"
+
+    # Probed live from the 8BitDo (Switch/Pro Controller mode) on
+    # /dev/input/js0 -- the device reports 16 buttons, 6 axes.
+    toggle_button: 7
+    debounce_sec: 0.4
+
+    # Extra flags passed through to `ros2 bag record`. Splitting bags keeps a
+    # single corrupt file from costing you a whole collection run.
+    extra_record_args: ["--max-bag-size", "2000000000"]
+
+    topics:
+      - "/camera/color/image_raw"
+      - "/camera/color/camera_info"
+      - "/camera/depth/image_rect_raw"
+      - "/camera/depth/camera_info"
+      - "/camera/aligned_depth_to_color/image_raw"
+      - "/camera/aligned_depth_to_color/camera_info"
+      - "/camera/imu"
+      - "/camera/extrinsics/depth_to_color"
+      - "/joy"
+      - "/arwun/recording_status"
+      - "/tf"
+      - "/tf_static"

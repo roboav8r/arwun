@@ -1,0 +1,21 @@
+# Standalone parameters for record_controller, for running the recorder
+# without the full bringup:
+#
+#   ros2 run arwun_teleop record_controller --ros-args \
+#     --params-file $(ros2 pkg prefix arwun_teleop)/share/arwun_teleop/config/record_controller.yaml
+#
+# The authoritative topic list for field collection lives in
+# arwun_bringup/config/record_params.yaml -- this file is a minimal subset for
+# bench testing the toggle logic without a camera attached.
+
+record_controller:
+  ros__parameters:
+    output_dir: "~/arwun_bags"
+    bag_prefix: "arwun_bench"
+    storage_id: "sqlite3"
+    toggle_button: 7
+    debounce_sec: 0.4
+    extra_record_args: [""]
+    topics:
+      - "/joy"
+      - "/arwun/recording_status"

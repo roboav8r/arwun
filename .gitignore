@@ -1,0 +1,38 @@
+# --- colcon ---
+build/
+install/
+log/
+
+# --- rosbag2 output ---
+# Bags are large binary data; keep them out of the repo entirely. The default
+# output_dir is ~/arwun_bags (outside the repo); these patterns cover the case
+# where output_dir is pointed somewhere inside it.
+bags/
+arwun_bags/
+rosbag2_*/
+arwun_*T*/
+*.db3
+*.db3-shm
+*.db3-wal
+*.mcap
+
+# --- python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+venv/
+.venv/
+
+# --- editors / os ---
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# --- misc ---
+*.log
+core
