@@ -12,7 +12,8 @@ record_controller:
   ros__parameters:
     output_dir: "~/arwun_bags"
     bag_prefix: "arwun_bench"
-    storage_id: "sqlite3"
+    # Keep in sync with arwun_bringup/config/record_params.yaml.
+    storage_id: "mcap"
     toggle_button: 7
     debounce_sec: 0.4
     extra_record_args: [""]

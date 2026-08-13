@@ -22,13 +22,64 @@ camera:
     enable_infra2: false
 
     # Resolution / fps. "width,height,fps".
-    # 640x480x30 is the sweet spot for the Orin Nano over USB3: 848x480x30
-    # also works, 1280x720x30 on both color and depth will saturate the bus
-    # and start dropping frames.
+    #
+    # Measured 2026-08-12 on this rig over a real USB 3 link (5 Gbps, driver
+    # reports "Device USB type: 3.2"), align_depth on, 15s per profile:
+    #
+    #   profile                     color  depth  aligned  imu    node CPU
+    #   640x480x30                   28.8   28.5    29.2   199.9    67%
+    #   848x480x30                   28.2   28.3    28.8   200.1    71%
+    #   1280x720x30                  27.5   26.8    28.9   200.0    99%
+    #   640x480x60                   55.5   55.1    57.3   199.9    84%
+    #   1920x1080 color + 720 depth  21.5   28.4    21.7   196.5   125%
+    #
+    # CPU is percent of ONE core (6 available). Rates are ~4% pessimistic:
+    # the four concurrent `ros2 topic hz` subscribers used to measure them cost
+    # about that much themselves (28.999 with one subscriber vs 27.747 with
+    # four, same profile). No driver-reported frame drops or USB errors at any
+    # profile except the 1080p one.
+    #
+    # THE LIMIT IS CPU, NOT BUS BANDWIDTH. An earlier version of this comment
+    # claimed 1280x720x30 on both streams "will saturate the bus and start
+    # dropping frames". That was measured while the rig was on a USB 2 cable,
+    # where it was true (720p color+depth needs ~884 Mbps against 480 Mbps
+    # available). On USB 3 it streams clean. What actually binds is
+    # align_depth, which is CPU-side and roughly doubles node CPU:
+    #
+    #   640x480x30    26% without align -> 67% with
+    #   1280x720x30   51% without align -> 99% with   <-- one core pegged
+    #
+    # so 1280x720x30 works but has no headroom left for anything else on that
+    # core. 848x480x30 is the better upgrade from 640x480: it is the D435i's
+    # native depth resolution, costs only 4 points of CPU over VGA, and leaves
+    # room. 1920x1080 color is genuinely over budget -- 21.5 Hz against a
+    # requested 30, and the first profile where the IMU itself starts slipping
+    # (196.5 Hz rather than 200).
+    #
+    # If you need more than this, the lever is CUDA: scripts/build_librealsense.sh
+    # currently passes -DBUILD_WITH_CUDA=false, so alignment runs on the CPU of
+    # a machine that has an idle GPU. Turning that on is untested here.
     rgb_camera.color_profile: "640,480,30"
     depth_module.depth_profile: "640,480,30"
 
     # --- IMU (D435i) ---
+    # REQUIRES the source-built librealsense (scripts/build_librealsense.sh).
+    # This Jetson kernel has no hid_sensor_* modules, so the apt build
+    # enumerates no Motion Module and these two flags silently do nothing --
+    # color and depth still stream, so the rig looks healthy. record.launch.py
+    # points the driver at the RSUSB build and warns if it is missing.
+    #
+    # Verified 2026-08-09: /camera/imu publishes at 200 Hz (gyro-rate, since
+    # unite_imu_method 2 interpolates accel up to the gyro timestamps).
+    #
+    # CALIBRATION: the driver logs "IMU Calibration is not available, default
+    # intrinsic and extrinsic will be used" and the accelerometer reads
+    # 8.949 m/s^2 at rest against 9.807 expected -- a consistent -8.8% scale
+    # error, not noise (300 samples spanned 8.925-8.965). Fine for recording,
+    # since the bag carries raw values and a scale factor can be applied in
+    # post, but do not feed this to VIO/SLAM untouched. Fix by running
+    # librealsense's rs-imu-calibration.py, which writes calibration to the
+    # camera's own EEPROM and so survives reflashing this workspace.
     enable_gyro: true
     enable_accel: true
     # 2 = linear_interpolation, which merges gyro+accel into a single
@@ -63,7 +114,11 @@ record_controller:
   ros__parameters:
     output_dir: "~/arwun_bags"
     bag_prefix: "arwun"
-    storage_id: "sqlite3"
+    # mcap over sqlite3: self-describing (schemas travel in the file), and
+    # readable by Foxglove/rerun without a ROS install. Requires
+    # ros-humble-rosbag2-storage-mcap, which is NOT pulled in by rosbag2 --
+    # without it `ros2 bag record --storage mcap` fails at startup.
+    storage_id: "mcap"
 
     # Probed live from the 8BitDo (Switch/Pro Controller mode) on
     # /dev/input/js0 -- the device reports 16 buttons, 6 axes.
@@ -72,6 +127,19 @@ record_controller:
 
     # Extra flags passed through to `ros2 bag record`. Splitting bags keeps a
     # single corrupt file from costing you a whole collection run.
+    #
+    # DISK IS THE BINDING CONSTRAINT IN THE FIELD, not CPU or USB. A measured
+    # 310s run at 640x480x30 with the topic list below produced 18.5 GiB --
+    # about 61 MB/s sustained, or ~215 GiB per hour. This rig's disk is 233 GB
+    # total, so a full disk is roughly an hour of continuous recording. Check
+    # free space before a session and plan on offloading between runs.
+    #
+    # That run also showed /camera/color/image_raw arriving 176 frames short of
+    # its own /camera/color/camera_info over the same interval (9106 vs 9282,
+    # ~1.9%). Both are published per frame by the driver, so the shortfall is
+    # rosbag2 dropping the large message under write load while the small one
+    # gets through -- not the camera dropping frames. If that 1.9% matters for
+    # your use, the lever is write throughput, not the camera settings.
     extra_record_args: ["--max-bag-size", "2000000000"]
 
     topics:
@@ -85,5 +153,11 @@ record_controller:
       - "/camera/extrinsics/depth_to_color"
       - "/joy"
       - "/arwun/recording_status"
+      # /tf is listed ahead of need: arwun_description is still a scaffold with
+      # no URDF, and even once one lands it will be all-fixed, so
+      # robot_state_publisher will emit the whole tree on /tf_static and never
+      # touch /tf. Expect /tf to be absent from `ros2 bag info` until the rig
+      # grows actuated joints and a joint_state_publisher. /tf_static IS
+      # populated today -- the camera node publishes its own optical frames.
       - "/tf"
       - "/tf_static"

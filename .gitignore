@@ -16,6 +16,14 @@ arwun_*T*/
 *.db3-wal
 *.mcap
 
+# --- vendored third-party sources ---
+# librealsense is built from source here with -DFORCE_RSUSB_BACKEND=true so the
+# D435i IMU is read over libusb; this Jetson kernel ships no hid_sensor_*/IIO
+# modules, so the stock apt build enumerates no Motion Module and /camera/imu
+# never publishes. Source tree + build artifacts are ~1GB -- rebuild with
+# scripts/build_librealsense.sh rather than committing it.
+vendor/
+
 # --- python ---
 __pycache__/
 *.py[cod]

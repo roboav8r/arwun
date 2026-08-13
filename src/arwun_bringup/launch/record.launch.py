@@ -12,6 +12,14 @@ Useful overrides:
     joy_dev:=/dev/input/js1         if the controller enumerates elsewhere
     camera:=false                   bring up everything but the D435i
     urdf:=/abs/path/to.urdf         non-default robot description
+
+THE IMU NEEDS A NON-STOCK LIBREALSENSE. This Jetson's kernel ships none of the
+hid_sensor_* modules, so the apt build of librealsense enumerates no Motion
+Module and /camera/imu never publishes -- while color and depth stream fine, so
+nothing looks broken until you check a bag. scripts/build_librealsense.sh builds
+a replacement with -DFORCE_RSUSB_BACKEND=true that reads the IMU over libusb
+instead. This launch file points the camera node at that build; see
+`librealsense_lib` below.
 """
 
 import os
@@ -21,6 +29,7 @@ from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     IncludeLaunchDescription,
+    LogInfo,
     OpaqueFunction,
 )
 from launch.conditions import IfCondition
@@ -40,6 +49,29 @@ def _setup(context):
     actions = []
 
     # --- camera -------------------------------------------------------
+    # Point the driver at the RSUSB-backend librealsense (see module docstring).
+    # The soname is librealsense2.so.2.58 in both the apt and source builds, so
+    # putting this directory first on the loader path is a drop-in swap -- but
+    # it also means a missing directory silently falls back to the apt build and
+    # a dead IMU, which is why the else-branch shouts about it.
+    librealsense_lib = os.path.expanduser(
+        LaunchConfiguration('librealsense_lib').perform(context))
+    camera_env = None
+    if os.path.isdir(librealsense_lib):
+        camera_env = {
+            'LD_LIBRARY_PATH': os.pathsep.join(
+                [librealsense_lib] + (
+                    [os.environ['LD_LIBRARY_PATH']]
+                    if os.environ.get('LD_LIBRARY_PATH') else [])),
+        }
+    else:
+        actions.append(LogInfo(msg=(
+            f'WARNING: {librealsense_lib} not found -- falling back to the '
+            'system librealsense. On this rig that means NO /camera/imu, and '
+            '`ros2 bag record` will not warn you about the missing topic. '
+            'Run scripts/build_librealsense.sh, or pass camera:=false if you '
+            'meant to record without the camera.')))
+
     actions.append(Node(
         package='realsense2_camera',
         executable='realsense2_camera_node',
@@ -48,6 +80,7 @@ def _setup(context):
         output='screen',
         parameters=[params_file],
         arguments=['--ros-args', '--log-level', log_level],
+        additional_env=camera_env,
         condition=IfCondition(LaunchConfiguration('camera')),
     ))
 
@@ -117,5 +150,15 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'log_level', default_value='info',
             description='ROS log level for the camera and recorder nodes.'),
+        # Prepended to the camera node's LD_LIBRARY_PATH. Override via the
+        # ARWUN_LIBREALSENSE_LIB environment variable to test a different
+        # librealsense build without editing this file. Point it at a
+        # nonexistent path to deliberately fall back to the apt build.
+        DeclareLaunchArgument(
+            'librealsense_lib',
+            default_value=os.environ.get(
+                'ARWUN_LIBREALSENSE_LIB',
+                '~/arwun_ws/vendor/librealsense/lib'),
+            description='librealsense build providing the IMU (RSUSB backend).'),
         OpaqueFunction(function=_setup),
     ])
