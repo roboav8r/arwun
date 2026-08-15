@@ -147,7 +147,10 @@ fi
 # librealsense claims the USB interface exclusively. If the ROS driver is up it
 # owns the camera and this script fails with a confusing enumeration error
 # rather than a clear "device busy".
-if pgrep -f 'realsense2_camera_node' >/dev/null; then
+# pgrep -x matches the process NAME. `pgrep -f` here would match any command
+# line merely containing the string -- including the shell that invoked this
+# script, an editor with the file open, or a grep for it -- and refuse to run.
+if pgrep -x 'realsense2_camera_node' >/dev/null; then
     echo "error: realsense2_camera_node is running and holds the camera." >&2
     echo "Stop your launch (Ctrl-C) and re-run this script." >&2
     exit 1

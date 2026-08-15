@@ -24,6 +24,15 @@ arwun_*T*/
 # scripts/build_librealsense.sh rather than committing it.
 vendor/
 
+# --- IMU calibration raw samples ---
+# rs-imu-calibration.py optionally dumps the per-pose accelerometer and
+# gyroscope samples it collected as accel_<footer>.txt / gyro_<footer>.txt in
+# the working directory. They are only useful for re-deriving the fit locally
+# with `calibrate_imu.sh -i`, are hundreds of KB, and are specific to one run of
+# one camera. The fit itself lands in the camera's EEPROM, not here.
+accel_*.txt
+gyro_*.txt
+
 # --- python ---
 __pycache__/
 *.py[cod]
