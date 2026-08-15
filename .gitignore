@@ -33,6 +33,10 @@ vendor/
 accel_*.txt
 gyro_*.txt
 
+# calibration.bin is the same fit as calibration.json in the EEPROM wire format
+# -- regenerable from the JSON, and it is the JSON that is readable in a diff.
+calibration.bin
+
 # --- python ---
 __pycache__/
 *.py[cod]
