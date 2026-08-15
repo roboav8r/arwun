@@ -158,11 +158,68 @@ arwun_ws/
 
 `build/`, `install/`, `log/`, and bag output directories are gitignored.
 
-## Status / not yet done
+## Status
 
-- [ ] `arwun_dynamics.urdf` not yet added (package is scaffolded for it)
-- [ ] Camera topic names unverified against real hardware
-- [ ] No motors, microcontroller, or drive teleop yet
+Current as of 2026-08-14.
+
+### Working and verified on hardware
+
+- **Colour + depth + aligned depth stream** at the configured 640x480x30. Five
+  profiles were benchmarked on a real USB 3 link; the numbers and the reasoning
+  live in `arwun_bringup/config/record_params.yaml`. The binding constraint is
+  CPU (`align_depth`), not bus bandwidth.
+- **`/camera/imu` publishes at 200 Hz.** This needs the source-built
+  librealsense from `scripts/build_librealsense.sh` — the apt build enumerates
+  no Motion Module on this kernel and the topic silently never appears.
+  Confirmed over a 310 s recording: 61603 IMU messages, 198.5 Hz.
+- **Topic names check out.** The list in `record_params.yaml` was reconciled
+  against `ros2 topic list` on real hardware. One expected absence: `/tf` will
+  not appear in a bag until the rig grows actuated joints — the transform tree
+  is all-fixed, so it goes out on `/tf_static`.
+- **The IMU calibration reached the camera's EEPROM and is being applied.** The
+  accel fit in `calibration.json` reads back off the device
+  (`rs-enumerate-devices -c`, sensitivity diag `1.017 / 1.030 / 1.008`) and
+  visibly changes what `/camera/imu` publishes, so it survives reflashing this
+  workspace and follows the camera between rigs. It is not yet *correct* —
+  see the two calibration items below.
+
+### Not yet done
+
+- [ ] **`arwun_dynamics.urdf` not added** (package is scaffolded for it).
+      Bags recorded now carry no camera-to-base transform.
+- [ ] **The accelerometer calibration overcorrects.** Measured 2026-08-14 over
+      6000 stationary samples: `/camera/imu` reports a magnitude of
+      **10.117 +/- 0.011 m/s^2**, i.e. +3.2% against 9.807, where before
+      calibration it read 8.949 (-8.8%). Smaller in absolute terms but the
+      wrong sign, and the residual now has a bias component
+      (`calibration.json` bias norm is 0.65 m/s^2), so unlike the original
+      pure scale error it will read differently at different orientations.
+      One stationary pose cannot separate scale from bias — characterising it
+      means measuring the magnitude at several orientations.
+      Likely cause: the six poses were held freehand. The fit absorbs pose tilt
+      into scale and alignment, and `--tolerance 1.5` (needed to get the tool
+      to advance at all) widens how far off a pose can be. A re-run braced
+      against a right-angled object on a flat table is the first thing to try.
+- [ ] **The gyroscope bias correction is not being applied.** Confirmed against
+      live data on 2026-08-14, not just inferred from the read-back. At rest
+      `/camera/imu` still shows `[-1.6e-3, -2.5e-3, +1.2e-3]` rad/s against a
+      fitted bias of `[-2.17e-3, -3.07e-3, +0.97e-3]` — 74-123% of it, i.e.
+      substantially uncorrected (the spread is bias instability between runs).
+      That is ~660 deg/hour of yaw drift. The read-back explains why: the
+      device holds `[-3.8e-5, -5.4e-5, 1.7e-5]`, smaller than what was written
+      by almost exactly 180/pi, the signature of a deg/s-vs-rad/s mismatch
+      between `rs-imu-calibration.py`'s write path (which writes the bias
+      through unconverted, line 695) and librealsense's read path.
+      Consequential for VIO/SLAM, not for recording — bags carry raw values, so
+      subtracting the fitted bias in post is a valid workaround.
+- [ ] **No field storage plan.** Recording sustains ~61 MB/s (~215 GiB/hour)
+      against a 233 GB disk — roughly one hour before it is full. Sessions need
+      offloading between runs, or external media.
+- [ ] **rosbag2 drops ~1.9% of colour frames under write load** (9106 images
+      against 9282 `camera_info` over the same interval). The camera is not
+      dropping them; write throughput is the lever if it matters.
+- [ ] **No motors, microcontroller, or drive teleop yet.**
+- [ ] **No field data collected yet** — `~/arwun_bags` is still empty.
 
 ## License
 
