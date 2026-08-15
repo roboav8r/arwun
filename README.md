@@ -89,21 +89,33 @@ ros2 launch arwun_bringup record.launch.py urdf:=/abs/path/to/other.urdf
 ### Recorded topics
 
 Configured in `arwun_bringup/config/record_params.yaml`. The default set is
-colour + depth + IMU + TF:
+colour + depth + the IR stereo pair + IMU + TF:
 
 ```
 /camera/color/image_raw              /camera/color/camera_info
 /camera/depth/image_rect_raw         /camera/depth/camera_info
 /camera/aligned_depth_to_color/image_raw
 /camera/aligned_depth_to_color/camera_info
+/camera/infra1/image_rect_raw        /camera/infra1/camera_info
+/camera/infra2/image_rect_raw        /camera/infra2/camera_info
+/camera/extrinsics/depth_to_infra1   /camera/extrinsics/depth_to_infra2
 /camera/imu                          /camera/extrinsics/depth_to_color
 /joy                                 /arwun/recording_status
 /tf                                  /tf_static
 ```
 
-The IR stereo pair is deliberately excluded to save USB and disk bandwidth;
-enable `enable_infra1`/`enable_infra2` and add the topics if you want to redo
-stereo or VIO offline.
+Verified against a real bag on 2026-08-14: every name above lands except `/joy`
+(absent only because that run was launched with `joy:=false`) and `/tf`, which
+is expected to be missing until the rig grows actuated joints.
+
+**The IR pair is recorded even though nothing consumes it yet.** Calibration,
+extrinsics and noise models can all be sorted out after a collection run; a
+stream that was never recorded cannot. Those frames are global shutter, unlike
+the rolling-shutter colour stream, so they are what any later VIO or offline
+stereo work would want. The cost is ~30% more disk (see below) for no
+measurable CPU change. Note that as configured they carry the projector's dot
+pattern, which is good for depth and bad for feature tracking — the tradeoff
+and the two ways out are written up in `record_params.yaml`.
 
 > **Verify these names on first use.** realsense2_camera has changed its topic
 > namespacing across releases. Plug the D435i in, launch, and run
@@ -111,6 +123,11 @@ stereo or VIO offline.
 > does *not* error on a name that never publishes — it silently omits it, so a
 > typo shows up only as a missing topic in `ros2 bag info` afterwards. Check the
 > first bag of a session before trusting the rest.
+>
+> The same silence applies to the streams themselves. Leaving
+> `depth_module.infra_profile` at its 848x480 default while depth runs at
+> 640x480 stops depth publishing entirely, with every stream still logged as
+> opening normally — keep the two profiles equal.
 
 ## Why the recorder uses SIGINT
 
@@ -172,10 +189,15 @@ Current as of 2026-08-14.
   librealsense from `scripts/build_librealsense.sh` — the apt build enumerates
   no Motion Module on this kernel and the topic silently never appears.
   Confirmed over a 310 s recording: 61603 IMU messages, 198.5 Hz.
-- **Topic names check out.** The list in `record_params.yaml` was reconciled
-  against `ros2 topic list` on real hardware. One expected absence: `/tf` will
-  not appear in a bag until the rig grows actuated joints — the transform tree
-  is all-fixed, so it goes out on `/tf_static`.
+- **Topic names check out**, including the IR pair added on 2026-08-14 — the
+  recorded list was verified against a real bag rather than just
+  `ros2 topic list`. One expected absence: `/tf` will not appear in a bag until
+  the rig grows actuated joints — the transform tree is all-fixed, so it goes
+  out on `/tf_static`.
+- **The global-shutter IR stereo pair is recorded** at 640x480x30, ~29.4 Hz
+  each, for the sake of later VIO or offline stereo work. Requires
+  `depth_module.infra_profile` to match `depth_profile` — see the warning in
+  the recorded-topics section, which cost a debugging round to find.
 - **The IMU calibration reached the camera's EEPROM and is being applied.** The
   accel fit in `calibration.json` reads back off the device
   (`rs-enumerate-devices -c`, sensitivity diag `1.017 / 1.030 / 1.008`) and
@@ -212,9 +234,12 @@ Current as of 2026-08-14.
       through unconverted, line 695) and librealsense's read path.
       Consequential for VIO/SLAM, not for recording — bags carry raw values, so
       subtracting the fitted bias in post is a valid workaround.
-- [ ] **No field storage plan.** Recording sustains ~61 MB/s (~215 GiB/hour)
-      against a 233 GB disk — roughly one hour before it is full. Sessions need
-      offloading between runs, or external media.
+- [ ] **No field storage plan, and this is now the tightest constraint on the
+      rig.** With the IR pair recorded the payload measures ~79 MB/s
+      (~266 GiB/hour), against 144 GB free on a 233 GB disk — about **32
+      minutes** of continuous recording. External media is a prerequisite for a
+      real field day, not an upgrade. Dropping `enable_infra1/2` buys back
+      roughly a quarter of the bandwidth if endurance matters more.
 - [ ] **rosbag2 drops ~1.9% of colour frames under write load** (9106 images
       against 9282 `camera_info` over the same interval). The camera is not
       dropping them; write throughput is the lever if it matters.

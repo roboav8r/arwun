@@ -147,10 +147,21 @@ fi
 # librealsense claims the USB interface exclusively. If the ROS driver is up it
 # owns the camera and this script fails with a confusing enumeration error
 # rather than a clear "device busy".
-# pgrep -x matches the process NAME. `pgrep -f` here would match any command
-# line merely containing the string -- including the shell that invoked this
-# script, an editor with the file open, or a grep for it -- and refuse to run.
-if pgrep -x 'realsense2_camera_node' >/dev/null; then
+#
+# Neither obvious form of this check works. `pgrep -f realsense2_camera_node`
+# matches any command line merely CONTAINING the string -- the shell that
+# invoked this script, an editor with the file open, a grep for it -- and
+# refuses to run with the camera free. But plain `pgrep -x
+# realsense2_camera_node` never matches ANYTHING: Linux truncates a process
+# name to 15 characters (TASK_COMM_LEN - 1), so the node's actual comm is
+# "realsense2_came" and the guard silently passes with the driver running,
+# which is the failure it exists to prevent. Verified 2026-08-14 against the
+# running node: /proc/<pid>/comm reads "realsense2_came".
+#
+# So match the name, truncated the same way the kernel truncates it. Matching
+# on comm rather than the command line is what keeps this from seeing itself.
+NODE_COMM="$(printf '%.15s' 'realsense2_camera_node')"
+if pgrep -x "${NODE_COMM}" >/dev/null; then
     echo "error: realsense2_camera_node is running and holds the camera." >&2
     echo "Stop your launch (Ctrl-C) and re-run this script." >&2
     exit 1

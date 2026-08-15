@@ -18,8 +18,30 @@ camera:
     # --- streams ---
     enable_color: true
     enable_depth: true
-    enable_infra1: false
-    enable_infra2: false
+    # The IR stereo pair is recorded even though nothing consumes it today.
+    # Calibration, extrinsics and noise models can all be worked out after a
+    # collection run; a stream that was never recorded cannot. These are the
+    # frames any future VIO or offline-stereo work would actually want, because
+    # they are GLOBAL SHUTTER -- the color stream is rolling shutter, which
+    # injects pose-dependent distortion that VIO front-ends handle badly.
+    #
+    # Costs, measured 2026-08-14: +30% disk (see the recorder section below)
+    # and no measurable CPU change (66% of one core against 67% without them,
+    # inside run-to-run noise). USB is untroubled.
+    #
+    # THE IR IMAGES CARRY THE PROJECTOR'S DOT PATTERN as configured. The dots
+    # are what make depth work on untextured surfaces, and they wreck feature
+    # tracking for VIO. Three ways to sit with this, none free:
+    #   - as-is: depth is at its best, the IR pair is compromised for VIO.
+    #   - depth_module.emitter_enabled: 0 -- clean IR, worse depth indoors and
+    #     on blank surfaces. Outdoors in daylight the projector contributes
+    #     little anyway, so this costs less in the field than it sounds.
+    #   - depth_module.emitter_on_off: true -- alternates per frame, so you get
+    #     both at half rate each, and downstream has to sort the frames out.
+    # Left as-is deliberately: depth is the validated product today and VIO is
+    # not yet in the loop. Revisit before a collection run intended for VIO.
+    enable_infra1: true
+    enable_infra2: true
 
     # Resolution / fps. "width,height,fps".
     #
@@ -61,6 +83,16 @@ camera:
     # a machine that has an idle GPU. Turning that on is untested here.
     rgb_camera.color_profile: "640,480,30"
     depth_module.depth_profile: "640,480,30"
+    # KEEP THIS EQUAL TO depth_profile. Depth and both IR streams come off the
+    # same sensor, and mismatched resolutions do not fail loudly: with infra
+    # left at its 848x480 default against depth at 640x480, the node logs every
+    # stream opening normally, /camera/infra1 and /camera/infra2 publish at a
+    # healthy 30 Hz -- and /camera/depth and /camera/aligned_depth_to_color go
+    # completely silent. Nothing in the log says so. Observed 2026-08-14 while
+    # enabling the IR pair; caught only by checking topic rates afterwards.
+    # If you change depth_profile, change this with it and re-check that depth
+    # still publishes.
+    depth_module.infra_profile: "640,480,30"
 
     # --- IMU (D435i) ---
     # REQUIRES the source-built librealsense (scripts/build_librealsense.sh).
@@ -72,14 +104,33 @@ camera:
     # Verified 2026-08-09: /camera/imu publishes at 200 Hz (gyro-rate, since
     # unite_imu_method 2 interpolates accel up to the gyro timestamps).
     #
-    # CALIBRATION: the driver logs "IMU Calibration is not available, default
-    # intrinsic and extrinsic will be used" and the accelerometer reads
-    # 8.949 m/s^2 at rest against 9.807 expected -- a consistent -8.8% scale
-    # error, not noise (300 samples spanned 8.925-8.965). Fine for recording,
-    # since the bag carries raw values and a scale factor can be applied in
-    # post, but do not feed this to VIO/SLAM untouched. Fix by running
-    # librealsense's rs-imu-calibration.py, which writes calibration to the
-    # camera's own EEPROM and so survives reflashing this workspace.
+    # CALIBRATION: a calibration WAS run and written to the camera's EEPROM on
+    # 2026-08-12 (scripts/calibrate_imu.sh; the fit is committed as
+    # calibration.json at the workspace root). It is not finished. Measured
+    # 2026-08-14 with scripts/check_imu_bias.py over 6000 stationary samples:
+    #
+    #   accelerometer  10.117 +/- 0.011 m/s^2  -- +3.2%, was 8.949 (-8.8%)
+    #   gyroscope      residual bias 66-123% of the fitted value, i.e. the
+    #                  gyro bias correction is not being applied at all
+    #
+    # So the accel fit overcorrects (probably freehand poses during the
+    # procedure, whose tilt the fit absorbs into scale and alignment), and the
+    # gyro half never took effect for an upstream reason -- the device holds a
+    # bias smaller than what was written by almost exactly 180/pi, the
+    # signature of a deg/s-vs-rad/s mismatch. README.md has the full account.
+    #
+    # WHAT THIS MEANS FOR RECORDING: bags are still worth collecting, but they
+    # are no longer raw. librealsense applies the EEPROM intrinsics inside the
+    # sensor, so /camera/imu carries whatever calibration was live at the time.
+    # That is invertible in post only if you know WHICH calibration was live,
+    # so either settle the calibration before a real collection or note the
+    # active fit alongside the bags. Re-running calibrate_imu.sh just
+    # overwrites the EEPROM again -- there is nothing to lose by retrying, and
+    # check_imu_bias.py verifies the result in 30s.
+    #
+    # Not a blocker for VIO/SLAM on its own: estimators carry gyro bias as an
+    # online state. Accelerometer SCALE error is the more awkward half, since
+    # they model accel bias but generally not accel scale.
     enable_gyro: true
     enable_accel: true
     # 2 = linear_interpolation, which merges gyro+accel into a single
@@ -129,10 +180,17 @@ record_controller:
     # single corrupt file from costing you a whole collection run.
     #
     # DISK IS THE BINDING CONSTRAINT IN THE FIELD, not CPU or USB. A measured
-    # 310s run at 640x480x30 with the topic list below produced 18.5 GiB --
-    # about 61 MB/s sustained, or ~215 GiB per hour. This rig's disk is 233 GB
-    # total, so a full disk is roughly an hour of continuous recording. Check
-    # free space before a session and plan on offloading between runs.
+    # 310s run at 640x480x30 produced 18.5 GiB -- about 61 MB/s sustained, or
+    # ~215 GiB per hour, and that was BEFORE the IR pair was recorded. With
+    # infra1+infra2 the payload measured 79 MB/s, or ~266 GiB per hour
+    # (2026-08-14, 20s window).
+    #
+    # This rig's disk is 233 GB total and had 144 GB free when that was
+    # measured, which is about 32 MINUTES of continuous recording. Check free
+    # space before every session, plan on offloading between runs, and treat
+    # external media as a prerequisite for a real field day rather than an
+    # upgrade. If you need the endurance more than the IR pair, turning
+    # enable_infra1/2 back off buys back roughly a quarter of the bandwidth.
     #
     # That run also showed /camera/color/image_raw arriving 176 frames short of
     # its own /camera/color/camera_info over the same interval (9106 vs 9282,
@@ -149,6 +207,17 @@ record_controller:
       - "/camera/depth/camera_info"
       - "/camera/aligned_depth_to_color/image_raw"
       - "/camera/aligned_depth_to_color/camera_info"
+      # Global-shutter IR pair, with their own camera_info and the extrinsics
+      # that place them against depth -- all four are needed to do anything
+      # with the stereo pair offline. Verified publishing 2026-08-14 at
+      # 29.4 Hz each. /camera/aligned_depth_to_infra1 exists as a topic but
+      # never publishes (align_depth targets color only), so it is not listed.
+      - "/camera/infra1/image_rect_raw"
+      - "/camera/infra1/camera_info"
+      - "/camera/infra2/image_rect_raw"
+      - "/camera/infra2/camera_info"
+      - "/camera/extrinsics/depth_to_infra1"
+      - "/camera/extrinsics/depth_to_infra2"
       - "/camera/imu"
       - "/camera/extrinsics/depth_to_color"
       - "/joy"
