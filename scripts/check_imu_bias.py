@@ -25,17 +25,25 @@ says so when the reading cannot be trusted.
 
 WHAT THE NUMBERS MEAN
 
-Accelerometer, magnitude against 9.807 m/s^2:
-    ~9.807          calibration is good
-    ~8.949          the fit is not being applied (this camera's uncalibrated
-                    reading -- a consistent -8.8% scale error)
-    anything else   the fit is being applied but is wrong
+Accelerometer, magnitude against 9.807 m/s^2. THIS IS A ONE-ORIENTATION
+MEASUREMENT and that is its main limitation: this camera's residual error is
+bias-dominated, so the magnitude it reports depends on which way it is
+pointing. Raw, it ranges from 8.95 to 10.31 m/s^2 across the six poses. So:
 
-    A single stationary pose cannot separate a scale error from a bias error;
-    it only tells you the total is off. If the magnitude is bad, re-measure at
-    two or three different orientations before concluding anything about which
-    term is at fault -- a scale error reads the same everywhere, a bias error
-    changes with orientation.
+    a good reading here      the calibration is good AT THIS ORIENTATION, and
+                             says little about the others
+    a bad reading here       something is wrong, but not necessarily what
+                             changed since you last measured
+
+    Never compare two readings taken at different orientations -- rotating the
+    camera changes the number on its own, which is enough to make a better
+    calibration look like a regression. To judge a calibration properly, score
+    it over all six poses:
+
+        ./scripts/score_imu_calibration.py accel_<footer>.txt
+
+    That is the number to trust. Use this script for the quick question of
+    whether a calibration is live and roughly sane, and for the gyroscope.
 
 Gyroscope, mean over a stationary run, which is the residual bias:
     ~0              bias correction is being applied
@@ -69,7 +77,10 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Imu
 
 G = 9.807
-UNCALIBRATED_MAGNITUDE = 8.949  # what this camera read before any calibration
+# Best worst-case magnitude error achieved so far, over all six poses
+# (2026-08-14). A single-orientation reading inside this is unremarkable;
+# outside it is worth scoring properly with score_imu_calibration.py.
+BEST_KNOWN_WORST_CASE = 0.17
 
 # Gyro spread above which the camera was moving and the mean is meaningless.
 # A camera at rest on a table sits around 0.002-0.003 rad/s on this sensor;
@@ -140,16 +151,17 @@ def report(node, fitted_bias):
     print(f'  magnitude    {magnitude:.4f} +/- {stdev(magnitudes):.4f} m/s^2')
     print(f'  error        {magnitude - G:+.4f} m/s^2 '
           f'({(magnitude / G - 1) * 100:+.2f}% against {G})')
-    if abs(magnitude - UNCALIBRATED_MAGNITUDE) < 0.05:
-        print('  -> matches the UNCALIBRATED reading: the fit is not being '
-              'applied.')
-    elif abs(magnitude - G) < 0.1:
-        print('  -> good (within 1%).')
+    if abs(magnitude - G) <= BEST_KNOWN_WORST_CASE:
+        print('  -> consistent with a good calibration at this orientation. '
+              'Only a six-pose')
+        print('     score says whether it holds up in the others.')
     else:
-        print('  -> the fit is being applied but is off. Re-measure at another '
-              'orientation')
-        print('     to tell a scale error (same everywhere) from a bias error '
-              '(varies).')
+        print(f'  -> outside the {BEST_KNOWN_WORST_CASE:.2f} m/s^2 this camera '
+              'has managed across all six')
+        print('     poses, so something is off. Score the fit properly before '
+              'reading anything')
+        print('     into it: ./scripts/score_imu_calibration.py '
+              'accel_<footer>.txt')
 
     print('\nGYROSCOPE (mean at rest = residual bias)')
     print('  mean         [' + ', '.join(f'{v:+.6f}' for v in gyro_mean)

@@ -3,11 +3,16 @@
 # Run Intel's D435i IMU calibration and (optionally) write the result to the
 # camera's EEPROM.
 #
-# WHY: as shipped, this camera's accelerometer reads ~8.95 m/s^2 at rest
-# against 9.807 expected -- a systematic -8.8% scale error, not noise. The
-# driver reports "IMU Calibration is not available, default intrinsic and
-# extrinsic will be used". Recorded bags carry raw values so this is
-# correctable in post, but it should not go into VIO/SLAM uncorrected.
+# WHY: as shipped, this camera's accelerometer is off by up to 0.861 m/s^2
+# (8.78%) depending on which way it points -- raw magnitude ranges 8.95 to
+# 10.31 m/s^2 across the six calibration poses. The driver reports "IMU
+# Calibration is not available, default intrinsic and extrinsic will be used".
+#
+# That spread is BIAS, not scale: a scale error reads the same in every
+# orientation. Earlier versions of this comment called it "a systematic -8.8%
+# scale error" on the strength of the 8.95 figure, which is simply the reading
+# in one pose. Judge results with scripts/score_imu_calibration.py, which
+# scores a fit over all six, rather than off a single stationary reading.
 #
 # The result is written to the camera's own EEPROM, not to this workspace, so
 # it survives reflashing the Jetson and follows the camera between rigs. You
@@ -44,17 +49,26 @@
 # magnitude term is ~0 and the whole 0.866 goes to orientation, giving about
 # 5 degrees of freedom to hold the pose.
 #
-# This camera reads 8.949 m/s^2 instead of 9.807. That burns 0.858 of the 0.866
-# on magnitude alone, before any tilt, leaving an acceptance cone of roughly
-# 0.7 degrees -- unreachable by hand. The tool sits in Status.rotate forever,
-# printing near-zero direction error and never advancing. The miscalibration
-# blocks its own calibration.
+# In this camera's worst pose the raw reading is 8.949 against 9.807. That
+# burns 0.858 of the 0.866 on magnitude alone, before any tilt, leaving an
+# acceptance cone of roughly 0.7 degrees -- unreachable by hand. The tool sits
+# in Status.rotate forever, printing near-zero direction error and never
+# advancing. The miscalibration blocks its own calibration.
+#
+# Note this stays true no matter how well calibrated the camera gets: the tool
+# deliberately turns the EEPROM correction OFF while collecting (upstream line
+# 258, "use the original IMU values"), so it always sees the raw error.
 #
 # Widening the radius is safe because it only decides "which of six poses is
 # this", and the six bucket targets are at least g*sqrt(2) = 13.87 m/s^2 apart,
-# so anything below ~6.9 keeps them unambiguous. The 1.5 default restores about
-# 7.5 degrees of tolerance -- slightly more than upstream intends for a healthy
-# camera, and still 4.6x below the point where two poses could overlap.
+# so anything below ~6.9 keeps them unambiguous.
+#
+# PREFER THE SMALLEST TOLERANCE THAT STILL ADVANCES. The leftover budget for
+# tilt is sqrt(T^2 - 0.858^2), so T=1.5 accepts poses up to ~7.2 degrees off
+# while T=1.2 accepts ~4.9, near the ~5 upstream intends for a healthy camera.
+# That matters: pose tilt is absorbed into the fitted scale and alignment, and
+# on 2026-08-14 tightening 1.5 -> 1.2 (with the camera braced against a right
+# angle rather than held) took the worst-case error from 5.13% to 1.70%.
 #
 # This does NOT loosen the fit itself; it only decides which samples belong to
 # which pose. The least-squares solve downstream is untouched.

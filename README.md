@@ -160,6 +160,43 @@ or, without ROS running, read the joystick device directly and press the button
 you want. Set `record_controller.toggle_button` in the params YAML to the index
 that lights up.
 
+## IMU calibration
+
+Done once per camera and stored on the camera's EEPROM, so it follows the D435i
+between rigs and survives reflashing the Jetson. `calibration.json` at the
+workspace root is the committed record of the fit currently on this camera.
+
+```bash
+./scripts/calibrate_imu.sh --tolerance 1.2      # interactive, six poses
+./scripts/score_imu_calibration.py accel_2.txt  # how good is the result?
+./scripts/check_imu_bias.py                     # 30s live check, needs the launch up
+```
+
+Three things worth knowing before redoing it:
+
+- **Brace the camera against a right angle** on a flat table for each of the six
+  poses. The fit absorbs pose tilt into scale and alignment, and freehand poses
+  are the difference between a 5% and a 1.7% result on this camera.
+- **`--tolerance` is not optional.** Upstream gates each pose on a 0.866 m/s²
+  radius that has to cover magnitude error *and* orientation error. This camera
+  spends most of that budget before any tilt, leaving an acceptance cone too
+  small to hit by hand. `calibrate_imu.sh` widens it; the header explains the
+  arithmetic and why it doesn't affect the fit itself.
+- **Judge the result over all six poses, not one.** The residual error is bias-
+  dominated, so the magnitude at rest depends on which way the camera points —
+  raw, it ranges from 8.95 to 10.31 m/s² by pose. Two readings at different
+  orientations are not comparable, and reading a single one made a better
+  calibration look like a regression during the 2026-08-14 session.
+  `score_imu_calibration.py` answers the real question: worst case across every
+  orientation.
+
+Say Y to saving raw samples when the tool offers — `accel_<footer>.txt` and
+`gyro_<footer>.txt` let you refit and re-write without redoing the poses:
+
+```bash
+./scripts/calibrate_imu.sh -i accel_2.txt gyro_2.txt --tolerance 1.2
+```
+
 ## Repository layout
 
 ```
@@ -198,42 +235,29 @@ Current as of 2026-08-14.
   each, for the sake of later VIO or offline stereo work. Requires
   `depth_module.infra_profile` to match `depth_profile` — see the warning in
   the recorded-topics section, which cost a debugging round to find.
-- **The IMU calibration reached the camera's EEPROM and is being applied.** The
-  accel fit in `calibration.json` reads back off the device
-  (`rs-enumerate-devices -c`, sensitivity diag `1.017 / 1.030 / 1.008`) and
-  visibly changes what `/camera/imu` publishes, so it survives reflashing this
-  workspace and follows the camera between rigs. It is not yet *correct* —
-  see the two calibration items below.
+- **The accelerometer is calibrated**, on the camera's own EEPROM, so it
+  survives reflashing this workspace and follows the camera between rigs.
+  Worst-case magnitude error across all six poses is **0.167 m/s² (1.70%)**,
+  down from 0.861 (8.78%) uncalibrated. `calibration.json` at the workspace
+  root is the committed record and matches what the device holds. The
+  gyroscope half is a separate story — see below.
 
 ### Not yet done
 
 - [ ] **`arwun_dynamics.urdf` not added** (package is scaffolded for it).
       Bags recorded now carry no camera-to-base transform.
-- [ ] **The accelerometer calibration overcorrects.** Measured 2026-08-14 over
-      6000 stationary samples: `/camera/imu` reports a magnitude of
-      **10.117 +/- 0.011 m/s^2**, i.e. +3.2% against 9.807, where before
-      calibration it read 8.949 (-8.8%). Smaller in absolute terms but the
-      wrong sign, and the residual now has a bias component
-      (`calibration.json` bias norm is 0.65 m/s^2), so unlike the original
-      pure scale error it will read differently at different orientations.
-      One stationary pose cannot separate scale from bias — characterising it
-      means measuring the magnitude at several orientations.
-      Likely cause: the six poses were held freehand. The fit absorbs pose tilt
-      into scale and alignment, and `--tolerance 1.5` (needed to get the tool
-      to advance at all) widens how far off a pose can be. A re-run braced
-      against a right-angled object on a flat table is the first thing to try.
 - [ ] **The gyroscope bias correction is not being applied.** Confirmed against
-      live data on 2026-08-14, not just inferred from the read-back. At rest
-      `/camera/imu` still shows `[-1.6e-3, -2.5e-3, +1.2e-3]` rad/s against a
-      fitted bias of `[-2.17e-3, -3.07e-3, +0.97e-3]` — 74-123% of it, i.e.
-      substantially uncorrected (the spread is bias instability between runs).
-      That is ~660 deg/hour of yaw drift. The read-back explains why: the
-      device holds `[-3.8e-5, -5.4e-5, 1.7e-5]`, smaller than what was written
-      by almost exactly 180/pi, the signature of a deg/s-vs-rad/s mismatch
-      between `rs-imu-calibration.py`'s write path (which writes the bias
-      through unconverted, line 695) and librealsense's read path.
-      Consequential for VIO/SLAM, not for recording — bags carry raw values, so
-      subtracting the fitted bias in post is a valid workaround.
+      live data, not just inferred from the read-back: at rest `/camera/imu`
+      shows `[-2.1e-3, -2.7e-3, +1.0e-3]` rad/s against a fitted bias of
+      `[-2.44e-3, -3.12e-3, +0.93e-3]` — 86-113% of it, i.e. essentially
+      uncorrected. The read-back explains why: the device holds a bias smaller
+      than what was written by almost exactly 180/pi, the signature of a
+      deg/s-vs-rad/s mismatch between `rs-imu-calibration.py`'s write path
+      (which writes the bias through unconverted, line 695) and librealsense's
+      read path. Left alone deliberately — the residual is ~0.12 deg/s, which
+      is unremarkable for this sensor and which VIO estimators carry as an
+      online state anyway. Subtracting the fitted bias in post is available if
+      something needs it.
 - [ ] **No field storage plan, and this is now the tightest constraint on the
       rig.** With the IR pair recorded the payload measures ~79 MB/s
       (~266 GiB/hour), against 144 GB free on a 233 GB disk — about **32
