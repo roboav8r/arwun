@@ -26,6 +26,7 @@ setup(
     entry_points={
         'console_scripts': [
             'record_controller = arwun_teleop.record_controller:main',
+            'record_indicator = arwun_teleop.record_indicator:main',
         ],
     },
 )

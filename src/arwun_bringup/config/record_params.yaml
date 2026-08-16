@@ -236,3 +236,29 @@ record_controller:
       # populated today -- the camera node publishes its own optical frames.
       - "/tf"
       - "/tf_static"
+
+record_indicator:
+  ros__parameters:
+    # Physical pin number on the 40-pin header (BOARD numbering -- the number
+    # you can count with a finger, not a BCM/Tegra name). 0 disables GPIO and
+    # leaves the terminal banner as the only indicator, which is the default
+    # because driving a header pin that has something else wired to it is
+    # worse than having no LED.
+    #
+    # To use one: LED anode to your chosen pin through a 220-330 ohm resistor,
+    # cathode to any GND pin (6, 9, 14, 20, 25, 30, 34, 39). The header is
+    # 3.3V logic and the pins are NOT 5V tolerant. Pin 7 is a good default --
+    # it is a plain GPIO with no pinmux conflict on the Orin Nano and was
+    # verified drivable from this account (the `gpio` group grants
+    # /dev/gpiochip* access, so no sudo is involved).
+    led_pin: 0
+    # Blinks rather than sits solid so the LED doubles as a liveness signal --
+    # a frozen indicator and a solid one look the same.
+    blink_hz: 2.0
+    banner: true
+
+    # NOTE: this indicator is NOT the pad. The 8BitDo's own LEDs and rumble are
+    # unreachable on this kernel -- hid_nintendo does not exist in this L4T
+    # build, so the pad falls back to hid-generic and exposes neither EV_LED
+    # nor EV_FF. record_indicator.py's docstring has the full account and what
+    # it would take to change that.

@@ -13,7 +13,7 @@ are in the loop yet.
 | --- | --- | --- |
 | `arwun_description` | `ament_cmake` | URDF, meshes, and `robot_state_publisher` bringup. Supplies `/tf` and `/tf_static` so recorded bags carry the camera-to-base transform. |
 | `arwun_bringup` | `ament_cmake` | `record.launch.py` and the parameter YAML for the whole rig. |
-| `arwun_teleop` | `ament_python` | `record_controller`, a joystick-driven rosbag2 recorder. |
+| `arwun_teleop` | `ament_python` | `record_controller`, a joystick-driven rosbag2 recorder, and `record_indicator`, its LED/banner mirror. |
 
 ## Hardware
 
@@ -32,6 +32,18 @@ Neither driver ships with the base Humble install:
 sudo apt update
 sudo apt install -y ros-humble-realsense2-camera ros-humble-joy-linux
 ```
+
+> **`ros-humble-joy-linux` is easy to miss, and it fails late.** As of
+> 2026-08-15 this rig had `ros-humble-joy` installed but not
+> `ros-humble-joy-linux` — different package, different executable. They are not
+> interchangeable: `joy` provides an SDL-based `joy_node` taking `device_id`,
+> while `record.launch.py` asks for `joy_linux/joy_linux_node` taking `dev`.
+> Without it the launch aborts on the joystick node, which is why every bag
+> recorded before that date was taken with `joy:=false`. Check with:
+>
+> ```bash
+> ros2 pkg executables joy_linux    # expect: joy_linux joy_linux_node
+> ```
 
 Optional, only if you convert the description to xacro:
 
@@ -75,6 +87,50 @@ Watch state from another terminal:
 
 ```bash
 ros2 topic echo /arwun/recording_status
+```
+
+### The recording indicator
+
+`record_indicator` comes up with the launch and mirrors
+`/arwun/recording_status` onto a terminal banner and, optionally, an LED on the
+40-pin header. It **blinks rather than sitting solid**, so a frozen indicator
+and an active one do not look alike.
+
+The LED is off by default (`led_pin: 0`) because driving a header pin that has
+something else wired to it is worse than having no LED. To use one, wire an LED
+anode through a 220-330 Ω resistor to your chosen pin and the cathode to any
+ground pin, then set `record_indicator.led_pin` in the params YAML to the
+**physical** pin number:
+
+```bash
+ros2 launch arwun_bringup record.launch.py   # led_pin comes from the YAML
+```
+
+Board pin 7 is a good default: a plain GPIO with no pinmux conflict on the Orin
+Nano, verified drivable from an ordinary user account. No `sudo` is involved —
+membership of the `gpio` group grants `/dev/gpiochip*`. The header is 3.3 V
+logic and **the pins are not 5 V tolerant**.
+
+> **The indicator cannot live on the controller, and this is a kernel limit.**
+> The obvious home for it is the 8BitDo's own player LEDs and rumble, already in
+> the operator's hand. `hid_nintendo` does not exist in this L4T build
+> (`modinfo hid_nintendo` → module not found), so the pad binds to `hid-generic`
+> and enumerates with neither `EV_LED` nor `EV_FF` in its capability bits
+> (`EV=10001b`: SYN, KEY, ABS, MSC, REP). No userspace program can light a pad
+> LED the kernel does not expose. This is the same shape of problem as the
+> missing `hid_sensor_*` modules that forced the source-built librealsense, and
+> the same fix applies if it ever matters enough: build `hid-nintendo` out of
+> tree. Note that even then, 8BitDo's Switch-mode emulation is not guaranteed to
+> implement the rumble/LED subcommands.
+
+**A dark LED does not prove nothing is being written.** The indicator is a
+separate process from the recorder on purpose — an indicator that crashes must
+not be able to take a collection run down with it — so the authoritative check
+is still the recorder itself:
+
+```bash
+ros2 topic echo /arwun/recording_status    # what the recorder believes
+du -sh ~/arwun_bags/arwun_*                # what is actually growing on disk
 ```
 
 ### Launch overrides
@@ -214,7 +270,7 @@ arwun_ws/
 
 ## Status
 
-Current as of 2026-08-14.
+Current as of 2026-08-15.
 
 ### Working and verified on hardware
 
@@ -235,6 +291,19 @@ Current as of 2026-08-14.
   each, for the sake of later VIO or offline stereo work. Requires
   `depth_module.infra_profile` to match `depth_profile` — see the warning in
   the recorded-topics section, which cost a debugging round to find.
+- **The whole record path runs end to end.** First real bag taken 2026-08-15:
+  121 s, 9.3 GiB, 60405 messages, every configured topic present except `/tf`
+  (expected — see above). Toggle start, toggle stop, and `metadata.yaml`
+  written on the normal shutdown path, confirmed with `ros2 bag info`. Sustained
+  **78.5 MB/s**, which matches the 79 MB/s the config comment predicts. Colour
+  arrived 20 frames short of its `camera_info` over the run (3617 vs 3637,
+  0.55%) — the same rosbag2 write-load drop noted below, milder at this
+  duration. IMU held 199.6 Hz.
+- **`record_indicator` mirrors recording state** to a terminal banner and an
+  optional header LED, verified on GPIO board pin 7 including the teardown path
+  (pin driven low and released on both Ctrl-C and the SIGTERM that `ros2 launch`
+  sends). It cannot use the controller's own LEDs; see the kernel limitation in
+  the indicator section.
 - **The accelerometer is calibrated**, on the camera's own EEPROM, so it
   survives reflashing this workspace and follows the camera between rigs.
   Worst-case magnitude error across all six poses is **0.167 m/s² (1.70%)**,
@@ -268,7 +337,13 @@ Current as of 2026-08-14.
       against 9282 `camera_info` over the same interval). The camera is not
       dropping them; write throughput is the lever if it matters.
 - [ ] **No motors, microcontroller, or drive teleop yet.**
-- [ ] **No field data collected yet** — `~/arwun_bags` is still empty.
+- [ ] **No field data collected yet** — `~/arwun_bags` is empty again. The
+      2026-08-15 pipeline check produced a 9.3 GiB bench bag pointed at a desk,
+      which proved the path and was then deleted; it was never data.
+- [ ] **`ros-humble-joy-linux` is not installed on this rig**, so the launch
+      needs `joy:=false` until it is. See the setup warning.
+- [ ] **No `hid_nintendo` on this kernel**, so no controller-side LED or rumble
+      indicator is possible without an out-of-tree module build.
 
 ## License
 

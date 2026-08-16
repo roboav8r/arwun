@@ -114,6 +114,22 @@ def _setup(context):
         arguments=['--ros-args', '--log-level', log_level],
     ))
 
+    # --- indicator ------------------------------------------------------
+    # Mirrors /arwun/recording_status onto a header LED and a terminal banner.
+    # Deliberately a separate process from the recorder: an indicator that
+    # crashes must not be able to take a collection run down with it. The
+    # corollary is that a dark LED does not prove nothing is being written --
+    # see the health check in the README.
+    actions.append(Node(
+        package='arwun_teleop',
+        executable='record_indicator',
+        name='record_indicator',
+        output='screen',
+        parameters=[params_file],
+        arguments=['--ros-args', '--log-level', log_level],
+        condition=IfCondition(LaunchConfiguration('indicator')),
+    ))
+
     return actions
 
 
@@ -147,6 +163,9 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'description', default_value='true',
             description='Start robot_state_publisher.'),
+        DeclareLaunchArgument(
+            'indicator', default_value='true',
+            description='Start the recording-state LED/banner indicator.'),
         DeclareLaunchArgument(
             'log_level', default_value='info',
             description='ROS log level for the camera and recorder nodes.'),
