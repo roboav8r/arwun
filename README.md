@@ -9,11 +9,16 @@ are in the loop yet.
 
 ## Packages
 
+This repository is a **meta-repo**. It carries the manifest, the setup and
+calibration scripts, the offload tooling, and the hardware notes; the three ROS
+packages each live in their own repository and are assembled into `src/` by
+[vcstool](https://github.com/dirk-thomas/vcstool). `src/` is gitignored here.
+
 | Package | Build type | What it does |
 | --- | --- | --- |
-| `arwun_description` | `ament_cmake` | URDF, meshes, and `robot_state_publisher` bringup. Supplies `/tf` and `/tf_static` so recorded bags carry the camera-to-base transform. |
-| `arwun_bringup` | `ament_cmake` | `record.launch.py` and the parameter YAML for the whole rig. |
-| `arwun_teleop` | `ament_python` | `record_controller`, a joystick-driven rosbag2 recorder, and `record_indicator`, its LED/banner mirror. |
+| [`arwun_description`](https://github.com/roboav8r/arwun_description) | `ament_cmake` | URDF, meshes, and `robot_state_publisher` bringup. Supplies `/tf` and `/tf_static` so recorded bags carry the camera-to-base transform. |
+| [`arwun_bringup`](https://github.com/roboav8r/arwun_bringup) | `ament_cmake` | `record.launch.py` and the parameter YAML for the whole rig. Integration package — `exec_depend`s on the other two. |
+| [`arwun_teleop`](https://github.com/roboav8r/arwun_teleop) | `ament_python` | `record_controller`, a joystick-driven rosbag2 recorder, and `record_indicator`, its LED/banner mirror. |
 
 ## Hardware
 
@@ -45,6 +50,13 @@ sudo apt install -y ros-humble-realsense2-camera ros-humble-joy-linux
 > ros2 pkg executables joy_linux    # expect: joy_linux joy_linux_node
 > ```
 
+vcstool assembles `src/` from the package repositories and is needed before the
+first build:
+
+```bash
+sudo apt install -y python3-vcstool
+```
+
 Optional, only if you convert the description to xacro:
 
 ```bash
@@ -61,10 +73,21 @@ recorded before the URDF lands will not carry the camera-to-base transform.**
 ### 3. Build
 
 ```bash
+git clone https://github.com/roboav8r/arwun.git ~/arwun_ws
 cd ~/arwun_ws
+vcs import src < arwun.repos
 colcon build --symlink-install
 source install/setup.bash
 ```
+
+`vcs import` clones the three package repositories into `src/`. It will only
+clone into a directory that is empty, so to refresh a workspace you already
+have, use `vcs pull src` rather than re-importing.
+
+`arwun.repos` tracks each package's `main` branch rather than pinning a commit,
+so a fresh clone gets current code, not a reproducible past state. That is the
+right trade while all four repositories move together — pin the hashes when a
+collection run needs to be reproducible.
 
 ## Recording
 
@@ -296,18 +319,39 @@ Say Y to saving raw samples when the tool offers — `accel_<footer>.txt` and
 
 ## Repository layout
 
+Tracked in **this** repository:
+
 ```
-arwun_ws/
+arwun/
 ├── README.md
 ├── LICENSE
 ├── .gitignore
+├── arwun.repos              the manifest vcstool reads
+├── calibration.json         the IMU fit currently on this camera
+└── scripts/
+    ├── build_librealsense.sh    RSUSB-backend build that gives the D435i an IMU
+    ├── calibrate_imu.sh         interactive six-pose accelerometer calibration
+    ├── score_imu_calibration.py worst-case error across all six poses
+    ├── check_imu_bias.py        30 s live check against a running launch
+    └── offload_bags.sh          rsync finalized bags to a workstation
+```
+
+Populated by `vcs import`, and gitignored here — each is its own repository:
+
+```
 └── src/
     ├── arwun_description/   urdf/  meshes/  launch/  rviz/
     ├── arwun_bringup/       launch/record.launch.py  config/record_params.yaml
-    └── arwun_teleop/        arwun_teleop/record_controller.py  config/
+    └── arwun_teleop/        arwun_teleop/{record_controller,record_indicator}.py
 ```
 
-`build/`, `install/`, `log/`, and bag output directories are gitignored.
+`build/`, `install/`, `log/`, `vendor/`, `src/`, and bag output directories are
+all gitignored.
+
+**A change spanning a package and these notes is now two commits in two
+repositories.** `arwun_bringup` `exec_depend`s on both siblings, so parameter
+changes in particular tend to land in more than one place. That is the cost of
+the split; it buys each package a history and a release cadence of its own.
 
 ## Status
 

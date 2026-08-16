@@ -3,6 +3,13 @@ build/
 install/
 log/
 
+# --- package sources ---
+# src/ is populated by `vcs import src < arwun.repos`, not tracked here. Each
+# arwun_* package is its own repository with its own history; this one carries
+# the manifest, the scripts, and the hardware notes. Committing the packages
+# here as well would give every file two homes that silently drift apart.
+src/
+
 # --- rosbag2 output ---
 # Bags are large binary data; keep them out of the repo entirely. The default
 # output_dir is ~/arwun_bags (outside the repo); these patterns cover the case
