@@ -185,6 +185,47 @@ and the two ways out are written up in `record_params.yaml`.
 > 640x480 stops depth publishing entirely, with every stream still logged as
 > opening normally — keep the two profiles equal.
 
+## Offloading bags
+
+```bash
+./scripts/offload_bags.sh --dry-run        # what would move
+./scripts/offload_bags.sh                  # copy to the configured destination
+./scripts/offload_bags.sh --delete-local   # copy, verify by checksum, free disk
+```
+
+**There is no default destination — set one per rig before first use.** This
+repository is public, so a committed default of the form `user@10.x.y.z` would
+publish an account name and an internal network address to everyone who clones
+it, to save one line of setup. Precedence is `--dest`, then `ARWUN_DEST`, then
+git config:
+
+```bash
+git config --local arwun.offloadDest 'user@workstation:~/arwun_bags/'
+```
+
+The git-config form is per-clone and stays out of version control, which is
+what you want on a rig. Running with none of the three set prints those options
+and exits rather than guessing.
+
+The script only transfers directories that contain `metadata.yaml`. A bag
+without one is either still being written or was killed unfinalized, and
+copying it yields a truncated file that *looks* complete. Unfinalized
+directories are listed rather than silently skipped, since those are the ones
+needing `ros2 bag reindex`. `--delete-local` re-verifies with a `--checksum`
+pass and deletes nothing if any file still differs.
+
+**The link is wifi and it is the slow part.** This Jetson has no wired
+interface up. The payload is produced at ~79 MB/s against a link that will not
+sustain anything close to that, so budget offload time in multiples of record
+time, not fractions of it — a full disk is a multi-hour transfer. Recording and
+offloading at once will cost you frames.
+
+One-time key setup (needs the remote password once):
+
+```bash
+ssh-copy-id user@workstation
+```
+
 ## Why the recorder uses SIGINT
 
 `record_controller` runs `ros2 bag record` as a subprocess in its own process
@@ -299,6 +340,10 @@ Current as of 2026-08-15.
   arrived 20 frames short of its `camera_info` over the run (3617 vs 3637,
   0.55%) — the same rosbag2 write-load drop noted below, milder at this
   duration. IMU held 199.6 Hz.
+- **Bags offload to the workstation.** `scripts/offload_bags.sh` rsyncs
+  finalized bags over ssh, skipping any directory without `metadata.yaml`, and
+  re-verifies by checksum before `--delete-local` frees anything. Key
+  authorized 2026-08-15; destination is per-clone config, not committed.
 - **`record_indicator` mirrors recording state** to a terminal banner and an
   optional header LED, verified on GPIO board pin 7 including the teardown path
   (pin driven low and released on both Ctrl-C and the SIGTERM that `ros2 launch`
