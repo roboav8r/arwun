@@ -92,11 +92,59 @@ collection run needs to be reproducible.
 ## Recording
 
 ```bash
-ros2 launch arwun_bringup record.launch.py
+ros2 launch arwun_bringup record.launch.py              # depth capture
+ros2 launch arwun_bringup record.launch.py profile:=vio # VIO / SLAM capture
 ```
 
 Everything comes up **idle** — nothing is written until you press the button, so
 you can sanity-check topics before burning disk.
+
+### Choosing a profile
+
+**You cannot get depth and clean IR out of one bag**, so this is a decision to
+make before a run, not after. The projector dots that make depth work on
+untextured surfaces are the same dots that wreck frame-to-frame feature
+tracking, and the choice is made at the sensor.
+
+| | `record` (default) | `vio` |
+|---|---|---|
+| Config | `record_params.yaml` | `vio_params.yaml` |
+| Projector | on | **off** |
+| Streams | colour + depth + IR pair + IMU | IR pair + IMU |
+| Payload | 79 MB/s (~32 min free space) | **17.7 MiB/s (~2.2 h)** |
+| Dropped frames | 0.55–1.9% of colour | none measured |
+| Good for | depth, mapping, RGB-D SLAM | stereo-inertial VIO, SLAM, SfM |
+
+Why the dots break tracking: the projector is bolted to the camera, so its
+pattern is fixed in the *camera's* frame, not the world's. Where a dot lands
+depends only on the depth of the surface it hits — not on where the camera is.
+Translate along a wall and the real texture flows past while the dots sit
+nearly still. Detectors lock onto the dots because they are the highest-contrast
+thing in frame, and those features then report near-zero motion, giving
+underestimated translation and collapsed scale from a front-end that looks
+healthy throughout. It fails silently and confidently.
+
+What the dots do *not* break: `infra1` and `infra2` see the same dots from the
+same projector at the same instant, so **intra-frame stereo is helped, not
+hurt**. Bags already recorded with the `record` profile stay fully usable for
+offline stereo, calibration and noise modelling. Only correspondence *across
+time* is poisoned.
+
+Both files carry the full reasoning from their own side, including the
+`emitter_on_off` middle road and why it is not the free lunch it looks like.
+
+> **Indoors, exposure bites before darkness does.** Moderate room light plus
+> auto-exposure pushes exposure time toward the frame period — 33 ms at 30 fps
+> — and a global shutter held open that long while the rig rotates gives
+> full-frame motion blur, throwing away the exact property the IR pair is
+> recorded for. The `vio` profile caps it at 8500 µs and lets gain absorb the
+> rest; detectors tolerate noise far better than blur.
+>
+> The trap: `Auto Exposure Limit` and `Auto Exposure Limit Toggle` are
+> **separate options**, and the toggle defaults to 0. Setting the limit alone is
+> silently ignored — the parameter accepts the value, `ros2 param get` reads it
+> back correctly, and exposure still runs to frame time. Turning the toggle on
+> is the actual change.
 
 - **Toggle button: `buttons[7]`** on the 8BitDo (right trigger / ZR in
   Switch mode). Press once to start, press again to stop.
@@ -159,15 +207,25 @@ du -sh ~/arwun_bags/arwun_*                # what is actually growing on disk
 ### Launch overrides
 
 ```bash
+ros2 launch arwun_bringup record.launch.py profile:=vio    # emitter-off IR+IMU
 ros2 launch arwun_bringup record.launch.py output_dir:=/media/ssd/bags
 ros2 launch arwun_bringup record.launch.py joy_dev:=/dev/input/js1
 ros2 launch arwun_bringup record.launch.py camera:=false   # bench-test the toggle
 ros2 launch arwun_bringup record.launch.py urdf:=/abs/path/to/other.urdf
 ```
 
+`profile:=<name>` loads `config/<name>_params.yaml` from the package, and an
+unknown name is a hard launch failure rather than a fallback — a missing params
+file is not an error in ROS 2, just an empty parameter set, which would bring
+the camera up on driver defaults (projector on, colour and depth streaming)
+looking perfectly healthy. `params_file:=/abs/path.yaml` still overrides the
+profile and may point outside the package.
+
 ### Recorded topics
 
-Configured in `arwun_bringup/config/record_params.yaml`. The default set is
+Configured in `arwun_bringup/config/record_params.yaml` (the `record` profile;
+see [Choosing a profile](#choosing-a-profile) for the `vio` set). The default
+set is
 colour + depth + the IR stereo pair + IMU + TF:
 
 ```
@@ -341,7 +399,8 @@ Populated by `vcs import`, and gitignored here — each is its own repository:
 ```
 └── src/
     ├── arwun_description/   urdf/  meshes/  launch/  rviz/
-    ├── arwun_bringup/       launch/record.launch.py  config/record_params.yaml
+    ├── arwun_bringup/       launch/record.launch.py
+    │                        config/{record,vio}_params.yaml
     └── arwun_teleop/        arwun_teleop/{record_controller,record_indicator}.py
 ```
 
@@ -355,10 +414,21 @@ the split; it buys each package a history and a release cadence of its own.
 
 ## Status
 
-Current as of 2026-08-15.
+Current as of 2026-08-16.
 
 ### Working and verified on hardware
 
+- **The `vio` profile runs end to end**, verified against the camera on
+  2026-08-16. Every parameter was read back with `ros2 param get` to confirm it
+  was *applied* rather than merely accepted, then recorded to a real bag:
+  39.3 s, 695.2 MiB, **17.7 MiB/s (~62 GiB/hour, ~2.2 h of free space)**,
+  infra1/infra2 at 30.03/30.02 Hz and `/camera/imu` at 200.19 Hz. Frame counts
+  came out exactly matched — 1179 images against 1179 `camera_info` on both IR
+  streams, i.e. **none of the rosbag2 write-load drop** the `record` profile
+  shows, because the payload is a quarter the size. The stereo baseline is
+  recoverable two ways: `/camera/extrinsics/depth_to_infra2` publishes even
+  with `enable_depth` false (translation −0.05004743 m), and
+  `/camera/infra2/camera_info` carries P[3] = −19.0201.
 - **Colour + depth + aligned depth stream** at the configured 640x480x30. Five
   profiles were benchmarked on a real USB 3 link; the numbers and the reasoning
   live in `arwun_bringup/config/record_params.yaml`. The binding constraint is
@@ -421,10 +491,16 @@ Current as of 2026-08-15.
       (~266 GiB/hour), against 144 GB free on a 233 GB disk — about **32
       minutes** of continuous recording. External media is a prerequisite for a
       real field day, not an upgrade. Dropping `enable_infra1/2` buys back
-      roughly a quarter of the bandwidth if endurance matters more.
+      roughly a quarter of the bandwidth if endurance matters more. Note this
+      constrains the `record` profile specifically — `profile:=vio` measures
+      17.7 MiB/s and gets ~2.2 hours out of the same disk, so a VIO-targeted
+      day is not blocked on storage the way a depth-targeted one is.
 - [ ] **rosbag2 drops ~1.9% of colour frames under write load** (9106 images
       against 9282 `camera_info` over the same interval). The camera is not
-      dropping them; write throughput is the lever if it matters.
+      dropping them; write throughput is the lever if it matters. Not seen on
+      the `vio` profile at a quarter of the payload (1179/1179 on both IR
+      streams), which supports write throughput as the cause rather than the
+      camera.
 - [ ] **No motors, microcontroller, or drive teleop yet.**
 - [ ] **No field data collected yet** — `~/arwun_bags` is empty again. The
       2026-08-15 pipeline check produced a 9.3 GiB bench bag pointed at a desk,
