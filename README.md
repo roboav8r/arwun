@@ -9,11 +9,16 @@ are in the loop yet.
 
 ## Packages
 
+This repository is a **meta-repo**. It carries the manifest, the setup and
+calibration scripts, the offload tooling, and the hardware notes; the three ROS
+packages each live in their own repository and are assembled into `src/` by
+[vcstool](https://github.com/dirk-thomas/vcstool). `src/` is gitignored here.
+
 | Package | Build type | What it does |
 | --- | --- | --- |
-| `arwun_description` | `ament_cmake` | URDF, meshes, and `robot_state_publisher` bringup. Supplies `/tf` and `/tf_static` so recorded bags carry the camera-to-base transform. |
-| `arwun_bringup` | `ament_cmake` | `record.launch.py` and the parameter YAML for the whole rig. |
-| `arwun_teleop` | `ament_python` | `record_controller`, a joystick-driven rosbag2 recorder. |
+| [`arwun_description`](https://github.com/roboav8r/arwun_description) | `ament_cmake` | URDF, meshes, and `robot_state_publisher` bringup. Supplies `/tf` and `/tf_static` so recorded bags carry the camera-to-base transform. |
+| [`arwun_bringup`](https://github.com/roboav8r/arwun_bringup) | `ament_cmake` | `record.launch.py` and the parameter YAML for the whole rig. Integration package — `exec_depend`s on the other two. |
+| [`arwun_teleop`](https://github.com/roboav8r/arwun_teleop) | `ament_python` | `record_controller`, a joystick-driven rosbag2 recorder, and `record_indicator`, its LED/banner mirror. |
 
 ## Hardware
 
@@ -33,6 +38,25 @@ sudo apt update
 sudo apt install -y ros-humble-realsense2-camera ros-humble-joy-linux
 ```
 
+> **`ros-humble-joy-linux` is easy to miss, and it fails late.** As of
+> 2026-08-15 this rig had `ros-humble-joy` installed but not
+> `ros-humble-joy-linux` — different package, different executable. They are not
+> interchangeable: `joy` provides an SDL-based `joy_node` taking `device_id`,
+> while `record.launch.py` asks for `joy_linux/joy_linux_node` taking `dev`.
+> Without it the launch aborts on the joystick node, which is why every bag
+> recorded before that date was taken with `joy:=false`. Check with:
+>
+> ```bash
+> ros2 pkg executables joy_linux    # expect: joy_linux joy_linux_node
+> ```
+
+vcstool assembles `src/` from the package repositories and is needed before the
+first build:
+
+```bash
+sudo apt install -y python3-vcstool
+```
+
 Optional, only if you convert the description to xacro:
 
 ```bash
@@ -49,19 +73,78 @@ recorded before the URDF lands will not carry the camera-to-base transform.**
 ### 3. Build
 
 ```bash
+git clone https://github.com/roboav8r/arwun.git ~/arwun_ws
 cd ~/arwun_ws
+vcs import src < arwun.repos
 colcon build --symlink-install
 source install/setup.bash
 ```
 
+`vcs import` clones the three package repositories into `src/`. It will only
+clone into a directory that is empty, so to refresh a workspace you already
+have, use `vcs pull src` rather than re-importing.
+
+`arwun.repos` tracks each package's `main` branch rather than pinning a commit,
+so a fresh clone gets current code, not a reproducible past state. That is the
+right trade while all four repositories move together — pin the hashes when a
+collection run needs to be reproducible.
+
 ## Recording
 
 ```bash
-ros2 launch arwun_bringup record.launch.py
+ros2 launch arwun_bringup record.launch.py              # depth capture
+ros2 launch arwun_bringup record.launch.py profile:=vio # VIO / SLAM capture
 ```
 
 Everything comes up **idle** — nothing is written until you press the button, so
 you can sanity-check topics before burning disk.
+
+### Choosing a profile
+
+**You cannot get depth and clean IR out of one bag**, so this is a decision to
+make before a run, not after. The projector dots that make depth work on
+untextured surfaces are the same dots that wreck frame-to-frame feature
+tracking, and the choice is made at the sensor.
+
+| | `record` (default) | `vio` |
+|---|---|---|
+| Config | `record_params.yaml` | `vio_params.yaml` |
+| Projector | on | **off** |
+| Streams | colour + depth + IR pair + IMU | IR pair + IMU |
+| Payload | 79 MB/s (~32 min free space) | **17.7 MiB/s (~2.2 h)** |
+| Dropped frames | 0.55–1.9% of colour | none measured |
+| Good for | depth, mapping, RGB-D SLAM | stereo-inertial VIO, SLAM, SfM |
+
+Why the dots break tracking: the projector is bolted to the camera, so its
+pattern is fixed in the *camera's* frame, not the world's. Where a dot lands
+depends only on the depth of the surface it hits — not on where the camera is.
+Translate along a wall and the real texture flows past while the dots sit
+nearly still. Detectors lock onto the dots because they are the highest-contrast
+thing in frame, and those features then report near-zero motion, giving
+underestimated translation and collapsed scale from a front-end that looks
+healthy throughout. It fails silently and confidently.
+
+What the dots do *not* break: `infra1` and `infra2` see the same dots from the
+same projector at the same instant, so **intra-frame stereo is helped, not
+hurt**. Bags already recorded with the `record` profile stay fully usable for
+offline stereo, calibration and noise modelling. Only correspondence *across
+time* is poisoned.
+
+Both files carry the full reasoning from their own side, including the
+`emitter_on_off` middle road and why it is not the free lunch it looks like.
+
+> **Indoors, exposure bites before darkness does.** Moderate room light plus
+> auto-exposure pushes exposure time toward the frame period — 33 ms at 30 fps
+> — and a global shutter held open that long while the rig rotates gives
+> full-frame motion blur, throwing away the exact property the IR pair is
+> recorded for. The `vio` profile caps it at 8500 µs and lets gain absorb the
+> rest; detectors tolerate noise far better than blur.
+>
+> The trap: `Auto Exposure Limit` and `Auto Exposure Limit Toggle` are
+> **separate options**, and the toggle defaults to 0. Setting the limit alone is
+> silently ignored — the parameter accepts the value, `ros2 param get` reads it
+> back correctly, and exposure still runs to frame time. Turning the toggle on
+> is the actual change.
 
 - **Toggle button: `buttons[7]`** on the 8BitDo (right trigger / ZR in
   Switch mode). Press once to start, press again to stop.
@@ -77,33 +160,99 @@ Watch state from another terminal:
 ros2 topic echo /arwun/recording_status
 ```
 
+### The recording indicator
+
+`record_indicator` comes up with the launch and mirrors
+`/arwun/recording_status` onto a terminal banner and, optionally, an LED on the
+40-pin header. It **blinks rather than sitting solid**, so a frozen indicator
+and an active one do not look alike.
+
+The LED is off by default (`led_pin: 0`) because driving a header pin that has
+something else wired to it is worse than having no LED. To use one, wire an LED
+anode through a 220-330 Ω resistor to your chosen pin and the cathode to any
+ground pin, then set `record_indicator.led_pin` in the params YAML to the
+**physical** pin number:
+
+```bash
+ros2 launch arwun_bringup record.launch.py   # led_pin comes from the YAML
+```
+
+Board pin 7 is a good default: a plain GPIO with no pinmux conflict on the Orin
+Nano, verified drivable from an ordinary user account. No `sudo` is involved —
+membership of the `gpio` group grants `/dev/gpiochip*`. The header is 3.3 V
+logic and **the pins are not 5 V tolerant**.
+
+> **The indicator cannot live on the controller, and this is a kernel limit.**
+> The obvious home for it is the 8BitDo's own player LEDs and rumble, already in
+> the operator's hand. `hid_nintendo` does not exist in this L4T build
+> (`modinfo hid_nintendo` → module not found), so the pad binds to `hid-generic`
+> and enumerates with neither `EV_LED` nor `EV_FF` in its capability bits
+> (`EV=10001b`: SYN, KEY, ABS, MSC, REP). No userspace program can light a pad
+> LED the kernel does not expose. This is the same shape of problem as the
+> missing `hid_sensor_*` modules that forced the source-built librealsense, and
+> the same fix applies if it ever matters enough: build `hid-nintendo` out of
+> tree. Note that even then, 8BitDo's Switch-mode emulation is not guaranteed to
+> implement the rumble/LED subcommands.
+
+**A dark LED does not prove nothing is being written.** The indicator is a
+separate process from the recorder on purpose — an indicator that crashes must
+not be able to take a collection run down with it — so the authoritative check
+is still the recorder itself:
+
+```bash
+ros2 topic echo /arwun/recording_status    # what the recorder believes
+du -sh ~/arwun_bags/arwun_*                # what is actually growing on disk
+```
+
 ### Launch overrides
 
 ```bash
+ros2 launch arwun_bringup record.launch.py profile:=vio    # emitter-off IR+IMU
 ros2 launch arwun_bringup record.launch.py output_dir:=/media/ssd/bags
 ros2 launch arwun_bringup record.launch.py joy_dev:=/dev/input/js1
 ros2 launch arwun_bringup record.launch.py camera:=false   # bench-test the toggle
 ros2 launch arwun_bringup record.launch.py urdf:=/abs/path/to/other.urdf
 ```
 
+`profile:=<name>` loads `config/<name>_params.yaml` from the package, and an
+unknown name is a hard launch failure rather than a fallback — a missing params
+file is not an error in ROS 2, just an empty parameter set, which would bring
+the camera up on driver defaults (projector on, colour and depth streaming)
+looking perfectly healthy. `params_file:=/abs/path.yaml` still overrides the
+profile and may point outside the package.
+
 ### Recorded topics
 
-Configured in `arwun_bringup/config/record_params.yaml`. The default set is
-colour + depth + IMU + TF:
+Configured in `arwun_bringup/config/record_params.yaml` (the `record` profile;
+see [Choosing a profile](#choosing-a-profile) for the `vio` set). The default
+set is
+colour + depth + the IR stereo pair + IMU + TF:
 
 ```
 /camera/color/image_raw              /camera/color/camera_info
 /camera/depth/image_rect_raw         /camera/depth/camera_info
 /camera/aligned_depth_to_color/image_raw
 /camera/aligned_depth_to_color/camera_info
+/camera/infra1/image_rect_raw        /camera/infra1/camera_info
+/camera/infra2/image_rect_raw        /camera/infra2/camera_info
+/camera/extrinsics/depth_to_infra1   /camera/extrinsics/depth_to_infra2
 /camera/imu                          /camera/extrinsics/depth_to_color
 /joy                                 /arwun/recording_status
 /tf                                  /tf_static
 ```
 
-The IR stereo pair is deliberately excluded to save USB and disk bandwidth;
-enable `enable_infra1`/`enable_infra2` and add the topics if you want to redo
-stereo or VIO offline.
+Verified against a real bag on 2026-08-14: every name above lands except `/joy`
+(absent only because that run was launched with `joy:=false`) and `/tf`, which
+is expected to be missing until the rig grows actuated joints.
+
+**The IR pair is recorded even though nothing consumes it yet.** Calibration,
+extrinsics and noise models can all be sorted out after a collection run; a
+stream that was never recorded cannot. Those frames are global shutter, unlike
+the rolling-shutter colour stream, so they are what any later VIO or offline
+stereo work would want. The cost is ~30% more disk (see below) for no
+measurable CPU change. Note that as configured they carry the projector's dot
+pattern, which is good for depth and bad for feature tracking — the tradeoff
+and the two ways out are written up in `record_params.yaml`.
 
 > **Verify these names on first use.** realsense2_camera has changed its topic
 > namespacing across releases. Plug the D435i in, launch, and run
@@ -111,6 +260,52 @@ stereo or VIO offline.
 > does *not* error on a name that never publishes — it silently omits it, so a
 > typo shows up only as a missing topic in `ros2 bag info` afterwards. Check the
 > first bag of a session before trusting the rest.
+>
+> The same silence applies to the streams themselves. Leaving
+> `depth_module.infra_profile` at its 848x480 default while depth runs at
+> 640x480 stops depth publishing entirely, with every stream still logged as
+> opening normally — keep the two profiles equal.
+
+## Offloading bags
+
+```bash
+./scripts/offload_bags.sh --dry-run        # what would move
+./scripts/offload_bags.sh                  # copy to the configured destination
+./scripts/offload_bags.sh --delete-local   # copy, verify by checksum, free disk
+```
+
+**There is no default destination — set one per rig before first use.** This
+repository is public, so a committed default of the form `user@10.x.y.z` would
+publish an account name and an internal network address to everyone who clones
+it, to save one line of setup. Precedence is `--dest`, then `ARWUN_DEST`, then
+git config:
+
+```bash
+git config --local arwun.offloadDest 'user@workstation:~/arwun_bags/'
+```
+
+The git-config form is per-clone and stays out of version control, which is
+what you want on a rig. Running with none of the three set prints those options
+and exits rather than guessing.
+
+The script only transfers directories that contain `metadata.yaml`. A bag
+without one is either still being written or was killed unfinalized, and
+copying it yields a truncated file that *looks* complete. Unfinalized
+directories are listed rather than silently skipped, since those are the ones
+needing `ros2 bag reindex`. `--delete-local` re-verifies with a `--checksum`
+pass and deletes nothing if any file still differs.
+
+**The link is wifi and it is the slow part.** This Jetson has no wired
+interface up. The payload is produced at ~79 MB/s against a link that will not
+sustain anything close to that, so budget offload time in multiples of record
+time, not fractions of it — a full disk is a multi-hour transfer. Recording and
+offloading at once will cost you frames.
+
+One-time key setup (needs the remote password once):
+
+```bash
+ssh-copy-id user@workstation
+```
 
 ## Why the recorder uses SIGINT
 
@@ -143,26 +338,177 @@ or, without ROS running, read the joystick device directly and press the button
 you want. Set `record_controller.toggle_button` in the params YAML to the index
 that lights up.
 
+## IMU calibration
+
+Done once per camera and stored on the camera's EEPROM, so it follows the D435i
+between rigs and survives reflashing the Jetson. `calibration.json` at the
+workspace root is the committed record of the fit currently on this camera.
+
+```bash
+./scripts/calibrate_imu.sh --tolerance 1.2      # interactive, six poses
+./scripts/score_imu_calibration.py accel_2.txt  # how good is the result?
+./scripts/check_imu_bias.py                     # 30s live check, needs the launch up
+```
+
+Three things worth knowing before redoing it:
+
+- **Brace the camera against a right angle** on a flat table for each of the six
+  poses. The fit absorbs pose tilt into scale and alignment, and freehand poses
+  are the difference between a 5% and a 1.7% result on this camera.
+- **`--tolerance` is not optional.** Upstream gates each pose on a 0.866 m/s²
+  radius that has to cover magnitude error *and* orientation error. This camera
+  spends most of that budget before any tilt, leaving an acceptance cone too
+  small to hit by hand. `calibrate_imu.sh` widens it; the header explains the
+  arithmetic and why it doesn't affect the fit itself.
+- **Judge the result over all six poses, not one.** The residual error is bias-
+  dominated, so the magnitude at rest depends on which way the camera points —
+  raw, it ranges from 8.95 to 10.31 m/s² by pose. Two readings at different
+  orientations are not comparable, and reading a single one made a better
+  calibration look like a regression during the 2026-08-14 session.
+  `score_imu_calibration.py` answers the real question: worst case across every
+  orientation.
+
+Say Y to saving raw samples when the tool offers — `accel_<footer>.txt` and
+`gyro_<footer>.txt` let you refit and re-write without redoing the poses:
+
+```bash
+./scripts/calibrate_imu.sh -i accel_2.txt gyro_2.txt --tolerance 1.2
+```
+
 ## Repository layout
 
+Tracked in **this** repository:
+
 ```
-arwun_ws/
+arwun/
 ├── README.md
 ├── LICENSE
 ├── .gitignore
-└── src/
-    ├── arwun_description/   urdf/  meshes/  launch/  rviz/
-    ├── arwun_bringup/       launch/record.launch.py  config/record_params.yaml
-    └── arwun_teleop/        arwun_teleop/record_controller.py  config/
+├── arwun.repos              the manifest vcstool reads
+├── calibration.json         the IMU fit currently on this camera
+└── scripts/
+    ├── build_librealsense.sh    RSUSB-backend build that gives the D435i an IMU
+    ├── calibrate_imu.sh         interactive six-pose accelerometer calibration
+    ├── score_imu_calibration.py worst-case error across all six poses
+    ├── check_imu_bias.py        30 s live check against a running launch
+    └── offload_bags.sh          rsync finalized bags to a workstation
 ```
 
-`build/`, `install/`, `log/`, and bag output directories are gitignored.
+Populated by `vcs import`, and gitignored here — each is its own repository:
 
-## Status / not yet done
+```
+└── src/
+    ├── arwun_description/   urdf/  meshes/  launch/  rviz/
+    ├── arwun_bringup/       launch/record.launch.py
+    │                        config/{record,vio}_params.yaml
+    └── arwun_teleop/        arwun_teleop/{record_controller,record_indicator}.py
+```
 
-- [ ] `arwun_dynamics.urdf` not yet added (package is scaffolded for it)
-- [ ] Camera topic names unverified against real hardware
-- [ ] No motors, microcontroller, or drive teleop yet
+`build/`, `install/`, `log/`, `vendor/`, `src/`, and bag output directories are
+all gitignored.
+
+**A change spanning a package and these notes is now two commits in two
+repositories.** `arwun_bringup` `exec_depend`s on both siblings, so parameter
+changes in particular tend to land in more than one place. That is the cost of
+the split; it buys each package a history and a release cadence of its own.
+
+## Status
+
+Current as of 2026-08-16.
+
+### Working and verified on hardware
+
+- **The `vio` profile runs end to end**, verified against the camera on
+  2026-08-16. Every parameter was read back with `ros2 param get` to confirm it
+  was *applied* rather than merely accepted, then recorded to a real bag:
+  39.3 s, 695.2 MiB, **17.7 MiB/s (~62 GiB/hour, ~2.2 h of free space)**,
+  infra1/infra2 at 30.03/30.02 Hz and `/camera/imu` at 200.19 Hz. Frame counts
+  came out exactly matched — 1179 images against 1179 `camera_info` on both IR
+  streams, i.e. **none of the rosbag2 write-load drop** the `record` profile
+  shows, because the payload is a quarter the size. The stereo baseline is
+  recoverable two ways: `/camera/extrinsics/depth_to_infra2` publishes even
+  with `enable_depth` false (translation −0.05004743 m), and
+  `/camera/infra2/camera_info` carries P[3] = −19.0201.
+- **Colour + depth + aligned depth stream** at the configured 640x480x30. Five
+  profiles were benchmarked on a real USB 3 link; the numbers and the reasoning
+  live in `arwun_bringup/config/record_params.yaml`. The binding constraint is
+  CPU (`align_depth`), not bus bandwidth.
+- **`/camera/imu` publishes at 200 Hz.** This needs the source-built
+  librealsense from `scripts/build_librealsense.sh` — the apt build enumerates
+  no Motion Module on this kernel and the topic silently never appears.
+  Confirmed over a 310 s recording: 61603 IMU messages, 198.5 Hz.
+- **Topic names check out**, including the IR pair added on 2026-08-14 — the
+  recorded list was verified against a real bag rather than just
+  `ros2 topic list`. One expected absence: `/tf` will not appear in a bag until
+  the rig grows actuated joints — the transform tree is all-fixed, so it goes
+  out on `/tf_static`.
+- **The global-shutter IR stereo pair is recorded** at 640x480x30, ~29.4 Hz
+  each, for the sake of later VIO or offline stereo work. Requires
+  `depth_module.infra_profile` to match `depth_profile` — see the warning in
+  the recorded-topics section, which cost a debugging round to find.
+- **The whole record path runs end to end.** First real bag taken 2026-08-15:
+  121 s, 9.3 GiB, 60405 messages, every configured topic present except `/tf`
+  (expected — see above). Toggle start, toggle stop, and `metadata.yaml`
+  written on the normal shutdown path, confirmed with `ros2 bag info`. Sustained
+  **78.5 MB/s**, which matches the 79 MB/s the config comment predicts. Colour
+  arrived 20 frames short of its `camera_info` over the run (3617 vs 3637,
+  0.55%) — the same rosbag2 write-load drop noted below, milder at this
+  duration. IMU held 199.6 Hz.
+- **Bags offload to the workstation.** `scripts/offload_bags.sh` rsyncs
+  finalized bags over ssh, skipping any directory without `metadata.yaml`, and
+  re-verifies by checksum before `--delete-local` frees anything. Key
+  authorized 2026-08-15; destination is per-clone config, not committed.
+- **`record_indicator` mirrors recording state** to a terminal banner and an
+  optional header LED, verified on GPIO board pin 7 including the teardown path
+  (pin driven low and released on both Ctrl-C and the SIGTERM that `ros2 launch`
+  sends). It cannot use the controller's own LEDs; see the kernel limitation in
+  the indicator section.
+- **The accelerometer is calibrated**, on the camera's own EEPROM, so it
+  survives reflashing this workspace and follows the camera between rigs.
+  Worst-case magnitude error across all six poses is **0.167 m/s² (1.70%)**,
+  down from 0.861 (8.78%) uncalibrated. `calibration.json` at the workspace
+  root is the committed record and matches what the device holds. The
+  gyroscope half is a separate story — see below.
+
+### Not yet done
+
+- [ ] **`arwun_dynamics.urdf` not added** (package is scaffolded for it).
+      Bags recorded now carry no camera-to-base transform.
+- [ ] **The gyroscope bias correction is not being applied.** Confirmed against
+      live data, not just inferred from the read-back: at rest `/camera/imu`
+      shows `[-2.1e-3, -2.7e-3, +1.0e-3]` rad/s against a fitted bias of
+      `[-2.44e-3, -3.12e-3, +0.93e-3]` — 86-113% of it, i.e. essentially
+      uncorrected. The read-back explains why: the device holds a bias smaller
+      than what was written by almost exactly 180/pi, the signature of a
+      deg/s-vs-rad/s mismatch between `rs-imu-calibration.py`'s write path
+      (which writes the bias through unconverted, line 695) and librealsense's
+      read path. Left alone deliberately — the residual is ~0.12 deg/s, which
+      is unremarkable for this sensor and which VIO estimators carry as an
+      online state anyway. Subtracting the fitted bias in post is available if
+      something needs it.
+- [ ] **No field storage plan, and this is now the tightest constraint on the
+      rig.** With the IR pair recorded the payload measures ~79 MB/s
+      (~266 GiB/hour), against 144 GB free on a 233 GB disk — about **32
+      minutes** of continuous recording. External media is a prerequisite for a
+      real field day, not an upgrade. Dropping `enable_infra1/2` buys back
+      roughly a quarter of the bandwidth if endurance matters more. Note this
+      constrains the `record` profile specifically — `profile:=vio` measures
+      17.7 MiB/s and gets ~2.2 hours out of the same disk, so a VIO-targeted
+      day is not blocked on storage the way a depth-targeted one is.
+- [ ] **rosbag2 drops ~1.9% of colour frames under write load** (9106 images
+      against 9282 `camera_info` over the same interval). The camera is not
+      dropping them; write throughput is the lever if it matters. Not seen on
+      the `vio` profile at a quarter of the payload (1179/1179 on both IR
+      streams), which supports write throughput as the cause rather than the
+      camera.
+- [ ] **No motors, microcontroller, or drive teleop yet.**
+- [ ] **No field data collected yet** — `~/arwun_bags` is empty again. The
+      2026-08-15 pipeline check produced a 9.3 GiB bench bag pointed at a desk,
+      which proved the path and was then deleted; it was never data.
+- [ ] **`ros-humble-joy-linux` is not installed on this rig**, so the launch
+      needs `joy:=false` until it is. See the setup warning.
+- [ ] **No `hid_nintendo` on this kernel**, so no controller-side LED or rumble
+      indicator is possible without an out-of-tree module build.
 
 ## License
 

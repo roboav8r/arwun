@@ -3,6 +3,13 @@ build/
 install/
 log/
 
+# --- package sources ---
+# src/ is populated by `vcs import src < arwun.repos`, not tracked here. Each
+# arwun_* package is its own repository with its own history; this one carries
+# the manifest, the scripts, and the hardware notes. Committing the packages
+# here as well would give every file two homes that silently drift apart.
+src/
+
 # --- rosbag2 output ---
 # Bags are large binary data; keep them out of the repo entirely. The default
 # output_dir is ~/arwun_bags (outside the repo); these patterns cover the case
@@ -15,6 +22,27 @@ arwun_*T*/
 *.db3-shm
 *.db3-wal
 *.mcap
+
+# --- vendored third-party sources ---
+# librealsense is built from source here with -DFORCE_RSUSB_BACKEND=true so the
+# D435i IMU is read over libusb; this Jetson kernel ships no hid_sensor_*/IIO
+# modules, so the stock apt build enumerates no Motion Module and /camera/imu
+# never publishes. Source tree + build artifacts are ~1GB -- rebuild with
+# scripts/build_librealsense.sh rather than committing it.
+vendor/
+
+# --- IMU calibration raw samples ---
+# rs-imu-calibration.py optionally dumps the per-pose accelerometer and
+# gyroscope samples it collected as accel_<footer>.txt / gyro_<footer>.txt in
+# the working directory. They are only useful for re-deriving the fit locally
+# with `calibrate_imu.sh -i`, are hundreds of KB, and are specific to one run of
+# one camera. The fit itself lands in the camera's EEPROM, not here.
+accel_*.txt
+gyro_*.txt
+
+# calibration.bin is the same fit as calibration.json in the EEPROM wire format
+# -- regenerable from the JSON, and it is the JSON that is readable in a diff.
+calibration.bin
 
 # --- python ---
 __pycache__/

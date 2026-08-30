@@ -1,0 +1,34 @@
+# Package repositories assembled into src/ by vcstool.
+#
+#   sudo apt install -y python3-vcstool
+#   vcs import src < arwun.repos
+#
+# URLS ARE HTTPS ON PURPOSE. These are public repositories, so an HTTPS URL
+# clones for anyone with no key and no GitHub account. An SSH URL here would
+# work on this rig and fail for everyone else. Pushing over SSH still works
+# without editing this file -- tell git to rewrite the prefix for pushes only:
+#
+#   git config --global url."git@github.com:".pushInsteadOf "https://github.com/"
+#
+# VERSION IS A BRANCH, NOT A COMMIT. `vcs import` will check out whatever main
+# points at, so a fresh clone is not reproducible against a past state. That is
+# the right trade while all four repositories move together; pin the commit
+# hashes here instead once a collection run needs to be reproducible, and record
+# which fit was on the camera at the time (see the IMU section of README.md).
+#
+# `vcs import` clones into existing directories only if they are empty. To
+# refresh an already-populated workspace use `vcs pull src` instead, or remove
+# src/arwun_* first.
+repositories:
+  arwun_bringup:
+    type: git
+    url: https://github.com/roboav8r/arwun_bringup.git
+    version: main
+  arwun_description:
+    type: git
+    url: https://github.com/roboav8r/arwun_description.git
+    version: main
+  arwun_teleop:
+    type: git
+    url: https://github.com/roboav8r/arwun_teleop.git
+    version: main
